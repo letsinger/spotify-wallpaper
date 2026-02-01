@@ -21,19 +21,32 @@ function updateWindow(imagePath, colors, trackInfo, audioFeatures = null) {
 }
 
 function createWindow(imagePath, colors, trackInfo, audioFeatures = null) {
+  // Get screen dimensions for fullscreen
+  const { screen } = require('electron');
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width, height } = primaryDisplay.workAreaSize;
+  
   mainWindow = new BrowserWindow({
-    width: 600,
-    height: 600,
+    width: width,
+    height: height,
+    x: 0,
+    y: 0,
     frame: false,
     transparent: true,
     alwaysOnTop: false,
     resizable: false,
     fullscreen: true,
+    fullscreenable: true,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false
     }
   });
+  
+  // Ensure fullscreen on Linux
+  if (process.platform === 'linux') {
+    mainWindow.setFullScreen(true);
+  }
 
   // Load the HTML file
   const htmlPath = path.join(__dirname, 'electron-renderer.html');
