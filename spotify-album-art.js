@@ -433,12 +433,35 @@ async function fetchAndDisplay(spotifyApi, lastTrackId = null) {
     
     // Fetch audio features for the track
     let audioFeatures = null;
-    try {
-      const features = await spotifyApi.getAudioFeaturesForTrack(currentTrackId);
-      audioFeatures = features.body;
-      console.log(`Audio features: tempo=${audioFeatures.tempo?.toFixed(1)}bpm, energy=${audioFeatures.energy?.toFixed(2)}`);
-    } catch (error) {
-      console.log('Could not fetch audio features, using defaults');
+    if (currentTrackId) {
+      try {
+        // Add a small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        const features = await spotifyApi.getAudioFeaturesForTrack(currentTrackId);
+        if (features.body && features.body.tempo !== null && features.body.tempo !== undefined) {
+          audioFeatures = features.body;
+          console.log(`Audio features: tempo=${audioFeatures.tempo?.toFixed(1)}bpm, energy=${audioFeatures.energy?.toFixed(2)}`);
+        } else {
+          console.log('Audio features returned null or empty, using defaults');
+        }
+      } catch (error) {
+        // 403 errors are common for audio features - some tracks don't have them available
+        // or there might be rate limiting. Continue without features.
+        if (error.statusCode === 403) {
+          console.log('Audio features not available for this track (403 Forbidden) - using default animation speed');
+        } else if (error.statusCode === 404) {
+          console.log('Audio features not found for this track (404) - using default animation speed');
+        } else {
+          console.log(`Could not fetch audio features: ${error.message || 'Unknown error'}`);
+          if (error.statusCode) {
+            console.log(`  Status code: ${error.statusCode}`);
+          }
+        }
+        // Continue without audio features - app will use defaults
+      }
+    } else {
+      console.log('No track ID available, skipping audio features');
     }
     
     // Clean up old images (keep current + 1 previous)

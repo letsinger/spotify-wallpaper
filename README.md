@@ -71,20 +71,30 @@ This will:
 
 #### For Linux/Mac (bashrc):
 
+**Option 1: Create an alias (for manual use):**
 Add this line to your `~/.bashrc`:
 ```bash
-alias spotify-art='cd /path/to/spotify-wallpaper && node spotify-album-art.js'
+alias spotify-art='cd ~/spotify-wallpaper && node spotify-album-art.js'
 ```
 
 Or if you want to run it from anywhere:
 ```bash
-alias spotify-art='node /path/to/spotify-wallpaper/spotify-album-art.js'
+alias spotify-art='node ~/spotify-wallpaper/spotify-album-art.js'
 ```
 
 Then reload your bashrc:
 ```bash
 source ~/.bashrc
 ```
+
+**Option 2: Auto-start on terminal login (runs when you open a terminal):**
+If you want it to start automatically when you open a terminal, add this to your `~/.bashrc`:
+```bash
+# Start Spotify album art (runs in background)
+(cd ~/spotify-wallpaper && node spotify-album-art.js > /dev/null 2>&1 &)
+```
+
+**Note:** bashrc only runs for interactive shell sessions (when you open a terminal). It does NOT run on system boot. For boot-time startup, use the systemd service method below.
 
 #### For Windows (PowerShell):
 
@@ -113,6 +123,55 @@ If the profile doesn't exist, create it first:
 New-Item -Path $PROFILE -Type File -Force
 notepad $PROFILE
 ```
+
+### 6. Run on Boot (Linux - Optional)
+
+To make the app start automatically on boot, set up a systemd service:
+
+1. Edit the service file:
+   ```bash
+   nano spotify-wallpaper.service
+   ```
+
+2. Replace `YOUR_USERNAME` with your actual Linux username in two places:
+   - `WorkingDirectory=/home/YOUR_USERNAME/spotify-wallpaper`
+   - `Environment=XAUTHORITY=/home/YOUR_USERNAME/.Xauthority`
+   - `ExecStart=/usr/bin/node /home/YOUR_USERNAME/spotify-wallpaper/spotify-album-art.js`
+
+3. Also update the path if your project is in a different location
+
+4. Copy the service file to systemd directory:
+   ```bash
+   sudo cp spotify-wallpaper.service /etc/systemd/system/
+   ```
+
+5. Reload systemd and enable the service:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable spotify-wallpaper.service
+   ```
+
+6. Start the service:
+   ```bash
+   sudo systemctl start spotify-wallpaper.service
+   ```
+
+7. Check status:
+   ```bash
+   sudo systemctl status spotify-wallpaper.service
+   ```
+
+8. To stop the service:
+   ```bash
+   sudo systemctl stop spotify-wallpaper.service
+   ```
+
+9. To disable auto-start on boot:
+   ```bash
+   sudo systemctl disable spotify-wallpaper.service
+   ```
+
+**Note:** Make sure you've authenticated the app at least once manually before enabling the service, so the tokens are saved.
 
 ## Usage
 
