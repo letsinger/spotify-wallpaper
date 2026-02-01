@@ -394,6 +394,31 @@ function authenticate(spotifyApi) {
   });
 }
 
+// Helper function to refresh token if expired
+async function refreshTokenIfNeeded(spotifyApi, error) {
+  if (error && error.statusCode === 401) {
+    console.log(`[${new Date().toLocaleTimeString()}] Token expired. Refreshing...`);
+    try {
+      const data = await spotifyApi.refreshAccessToken();
+      spotifyApi.setAccessToken(data.body['access_token']);
+      if (data.body['refresh_token']) {
+        spotifyApi.setRefreshToken(data.body['refresh_token']);
+      }
+      saveTokens({
+        access_token: spotifyApi.getAccessToken(),
+        refresh_token: spotifyApi.getRefreshToken()
+      });
+      console.log(`[${new Date().toLocaleTimeString()}] Token refreshed successfully`);
+      return true;
+    } catch (refreshError) {
+      console.error(`[${new Date().toLocaleTimeString()}] Failed to refresh token:`, refreshError.message);
+      console.error('Re-authentication required. Please restart the service.');
+      return false;
+    }
+  }
+  return false;
+}
+
 // Fetch and display current track
 async function fetchAndDisplay(spotifyApi, lastTrackId = null) {
   try {
@@ -409,21 +434,69 @@ async function fetchAndDisplay(spotifyApi, lastTrackId = null) {
         console.log(`[${new Date().toLocaleTimeString()}] Currently playing track detected`);
       }
     } catch (e) {
-      // If no currently playing track, fall back to recently played
+      // If token expired, try to refresh
+      if (e.statusCode === 401) {
+        const refreshed = await refreshTokenIfNeeded(spotifyApi, e);
+        if (refreshed) {
+          // Retry the call after refresh
+          try {
+            const currentlyPlaying = await spotifyApi.getMyCurrentPlayingTrack();
+            if (currentlyPlaying.body && currentlyPlaying.body.item) {
+              track = currentlyPlaying.body.item;
+              currentTrackId = track.id;
+              console.log(`[${new Date().toLocaleTimeString()}] Currently playing track detected (after token refresh)`);
+            }
+          } catch (retryError) {
+            // If still fails, fall through to recently played
+          }
+        } else {
+          // Token refresh failed, return early
+          return lastTrackId;
+        }
+      }
+      // If no currently playing track or other error, fall back to recently played
     }
     
     // Fall back to recently played tracks if no currently playing track
     if (!track) {
-      const response = await spotifyApi.getMyRecentlyPlayedTracks({ limit: 1 });
-      
-      if (!response.body.items || response.body.items.length === 0) {
-        console.log(`[${new Date().toLocaleTimeString()}] No recently played tracks found.`);
-        return lastTrackId;
-      }
+      try {
+        const response = await spotifyApi.getMyRecentlyPlayedTracks({ limit: 1 });
+        
+        if (!response.body.items || response.body.items.length === 0) {
+          console.log(`[${new Date().toLocaleTimeString()}] No recently played tracks found.`);
+          return lastTrackId;
+        }
 
-      track = response.body.items[0].track;
-      currentTrackId = track.id;
-      console.log(`[${new Date().toLocaleTimeString()}] Using recently played track`);
+        track = response.body.items[0].track;
+        currentTrackId = track.id;
+        console.log(`[${new Date().toLocaleTimeString()}] Using recently played track`);
+      } catch (e) {
+        // If token expired, try to refresh and retry
+        if (e.statusCode === 401) {
+          const refreshed = await refreshTokenIfNeeded(spotifyApi, e);
+          if (refreshed) {
+            try {
+              const response = await spotifyApi.getMyRecentlyPlayedTracks({ limit: 1 });
+              if (response.body.items && response.body.items.length > 0) {
+                track = response.body.items[0].track;
+                currentTrackId = track.id;
+                console.log(`[${new Date().toLocaleTimeString()}] Using recently played track (after token refresh)`);
+              } else {
+                console.log(`[${new Date().toLocaleTimeString()}] No recently played tracks found.`);
+                return lastTrackId;
+              }
+            } catch (retryError) {
+              console.error(`[${new Date().toLocaleTimeString()}] Error fetching recently played tracks:`, retryError.message);
+              return lastTrackId;
+            }
+          } else {
+            return lastTrackId;
+          }
+        } else {
+          console.error(`[${new Date().toLocaleTimeString()}] Error fetching recently played tracks:`, e.message);
+          return lastTrackId;
+        }
+      }
     }
     
     if (!track || !currentTrackId) {
@@ -478,9 +551,26 @@ async function fetchAndDisplay(spotifyApi, lastTrackId = null) {
           console.log('Audio features returned null or empty, using defaults');
         }
       } catch (error) {
-        // 403 errors are common for audio features - some tracks don't have them available
-        // or there might be rate limiting. Continue without features.
-        if (error.statusCode === 403) {
+        // If token expired, try to refresh and retry once
+        if (error.statusCode === 401) {
+          const refreshed = await refreshTokenIfNeeded(spotifyApi, error);
+          if (refreshed) {
+            try {
+              const features = await spotifyApi.getAudioFeaturesForTrack(currentTrackId);
+              if (features.body && features.body.tempo !== null && features.body.tempo !== undefined) {
+                audioFeatures = features.body;
+                console.log(`Audio features: tempo=${audioFeatures.tempo?.toFixed(1)}bpm, energy=${audioFeatures.energy?.toFixed(2)} (after token refresh)`);
+              }
+            } catch (retryError) {
+              // If still fails, continue without features
+              console.log('Audio features not available after token refresh - using defaults');
+            }
+          } else {
+            console.log('Audio features not available (token refresh failed) - using defaults');
+          }
+        } else if (error.statusCode === 403) {
+          // 403 errors are common for audio features - some tracks don't have them available
+          // or there might be rate limiting. Continue without features.
           console.log('Audio features not available for this track (403 Forbidden) - using default animation speed');
         } else if (error.statusCode === 404) {
           console.log('Audio features not found for this track (404) - using default animation speed');
