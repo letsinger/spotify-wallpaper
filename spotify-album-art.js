@@ -1,0 +1,509 @@
+#!/usr/bin/env node
+
+const SpotifyWebApi = require('spotify-web-api-node');
+const fs = require('fs');
+const path = require('path');
+const { exec, spawn } = require('child_process');
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
+const Vibrant = require('node-vibrant');
+const selfsigned = require('selfsigned');
+
+// Configuration
+const CONFIG_FILE = path.join(__dirname, '.spotify-config.json');
+const TOKEN_FILE = path.join(__dirname, '.spotify-tokens.json');
+const TEMP_IMAGE_DIR = path.join(__dirname, 'temp');
+
+// Ensure temp directory exists
+if (!fs.existsSync(TEMP_IMAGE_DIR)) {
+  fs.mkdirSync(TEMP_IMAGE_DIR, { recursive: true });
+}
+
+// Load configuration
+function loadConfig() {
+  if (!fs.existsSync(CONFIG_FILE)) {
+    console.error('Error: .spotify-config.json not found!');
+    console.error('Please create .spotify-config.json with your Spotify API credentials.');
+    console.error('See README.md for setup instructions.');
+    process.exit(1);
+  }
+  return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+}
+
+// Load tokens
+function loadTokens() {
+  if (fs.existsSync(TOKEN_FILE)) {
+    return JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf8'));
+  }
+  return null;
+}
+
+// Save tokens
+function saveTokens(tokens) {
+  fs.writeFileSync(TOKEN_FILE, JSON.stringify(tokens, null, 2));
+}
+
+// Download image from URL
+function downloadImage(url, filepath) {
+  return new Promise((resolve, reject) => {
+    const protocol = url.startsWith('https') ? https : http;
+    const file = fs.createWriteStream(filepath);
+    
+    protocol.get(url, (response) => {
+      if (response.statusCode === 302 || response.statusCode === 301) {
+        // Handle redirect
+        return downloadImage(response.headers.location, filepath)
+          .then(resolve)
+          .catch(reject);
+      }
+      
+      if (response.statusCode !== 200) {
+        file.close();
+        fs.unlinkSync(filepath);
+        reject(new Error(`Failed to download image: ${response.statusCode}`));
+        return;
+      }
+      
+      response.pipe(file);
+      file.on('finish', () => {
+        file.close();
+        resolve();
+      });
+    }).on('error', (err) => {
+      file.close();
+      if (fs.existsSync(filepath)) {
+        fs.unlinkSync(filepath);
+      }
+      reject(err);
+    });
+  });
+}
+
+// Extract colors from image
+async function extractColors(imagePath) {
+  try {
+    const palette = await Vibrant.from(imagePath).getPalette();
+    const colors = [];
+    
+    // Extract vibrant colors from the palette
+    const colorKeys = ['Vibrant', 'Muted', 'DarkVibrant', 'DarkMuted', 'LightVibrant', 'LightMuted'];
+    for (const key of colorKeys) {
+      if (palette[key]) {
+        const rgb = palette[key].getRgb();
+        colors.push(rgb);
+      }
+    }
+    
+    // If we don't have enough colors, duplicate some
+    while (colors.length < 4) {
+      colors.push(...colors);
+    }
+    
+    return colors.slice(0, 6); // Return up to 6 colors
+  } catch (error) {
+    console.error('Error extracting colors:', error.message);
+    // Return default colors if extraction fails
+    return [
+      [255, 0, 0],
+      [0, 255, 0],
+      [0, 0, 255],
+      [255, 255, 0]
+    ];
+  }
+}
+
+// Clean up old album art images, keeping only the most recent ones
+function cleanupOldImages(currentImagePath, keepCount = 2) {
+  try {
+    if (!fs.existsSync(TEMP_IMAGE_DIR)) {
+      return;
+    }
+
+    const files = fs.readdirSync(TEMP_IMAGE_DIR);
+    const imageFiles = files
+      .filter(file => file.startsWith('album-art-') && file.endsWith('.jpg'))
+      .map(file => {
+        const filePath = path.join(TEMP_IMAGE_DIR, file);
+        const stats = fs.statSync(filePath);
+        return {
+          name: file,
+          path: filePath,
+          mtime: stats.mtime.getTime()
+        };
+      })
+      .sort((a, b) => b.mtime - a.mtime); // Sort by modification time, newest first
+
+    // Get the current image filename to make sure we don't delete it
+    const currentFileName = path.basename(currentImagePath);
+
+    // Remove old images, but keep the current one and a few recent ones
+    let kept = 0;
+    for (const file of imageFiles) {
+      if (file.name === currentFileName) {
+        // Always keep the current image
+        kept++;
+        continue;
+      }
+      
+      if (kept < keepCount) {
+        // Keep the most recent images
+        kept++;
+        continue;
+      }
+      
+      // Delete old images
+      try {
+        fs.unlinkSync(file.path);
+      } catch (err) {
+        // Ignore errors deleting individual files
+      }
+    }
+  } catch (error) {
+    // Silently fail cleanup - not critical
+    console.error('Error cleaning up old images:', error.message);
+  }
+}
+
+// Global Electron process reference
+let electronProcess = null;
+let electronIPC = null;
+
+// Launch or update Electron app
+function launchElectronApp(imagePath, colors, trackInfo, audioFeatures = null) {
+  return new Promise((resolve, reject) => {
+    const updateData = {
+      imagePath: path.resolve(imagePath),
+      colors: colors,
+      trackInfo: trackInfo,
+      audioFeatures: audioFeatures
+    };
+    
+    // Write update to a file that Electron can watch
+    const updateFile = path.join(TEMP_IMAGE_DIR, 'update.json');
+    fs.writeFileSync(updateFile, JSON.stringify(updateData));
+    
+    // If Electron is already running, it will pick up the update via file watch
+    if (electronProcess && !electronProcess.killed) {
+      resolve();
+      return;
+    }
+    
+    // Launch new Electron process
+    const electronPath = require('electron');
+    const mainPath = path.join(__dirname, 'electron-main.js');
+    
+    // Use absolute path
+    const absoluteImagePath = path.resolve(imagePath);
+    const escapedColors = JSON.stringify(colors);
+    const escapedTrackInfo = JSON.stringify(trackInfo);
+    const escapedAudioFeatures = JSON.stringify(audioFeatures);
+    
+    const args = [
+      mainPath,
+      absoluteImagePath,
+      escapedColors,
+      escapedTrackInfo,
+      escapedAudioFeatures
+    ];
+    
+    electronProcess = spawn(electronPath, args, {
+      detached: false,
+      stdio: 'ignore'
+    });
+    
+    electronProcess.on('exit', () => {
+      electronProcess = null;
+    });
+    
+    electronProcess.unref();
+    
+    // Give it a moment to start
+    setTimeout(() => {
+      resolve();
+    }, 500);
+  });
+}
+
+// Initialize Spotify API
+async function initializeSpotify() {
+  const config = loadConfig();
+  const spotifyApi = new SpotifyWebApi({
+    clientId: config.clientId,
+    clientSecret: config.clientSecret,
+    redirectUri: config.redirectUri || 'https://127.0.0.1:8888/callback'
+  });
+
+  let tokens = loadTokens();
+  
+  if (!tokens) {
+    console.log('No saved tokens found. Starting OAuth flow...');
+    await authenticate(spotifyApi);
+    tokens = loadTokens();
+  }
+
+  spotifyApi.setAccessToken(tokens.access_token);
+  spotifyApi.setRefreshToken(tokens.refresh_token);
+
+  // Check if token needs refresh
+  try {
+    await spotifyApi.getMe();
+  } catch (error) {
+    if (error.statusCode === 401) {
+      console.log('Token expired. Refreshing...');
+      try {
+        const data = await spotifyApi.refreshAccessToken();
+        spotifyApi.setAccessToken(data.body['access_token']);
+        if (data.body['refresh_token']) {
+          spotifyApi.setRefreshToken(data.body['refresh_token']);
+        }
+        saveTokens({
+          access_token: spotifyApi.getAccessToken(),
+          refresh_token: spotifyApi.getRefreshToken()
+        });
+      } catch (refreshError) {
+        console.error('Failed to refresh token. Re-authenticating...');
+        await authenticate(spotifyApi);
+        tokens = loadTokens();
+        spotifyApi.setAccessToken(tokens.access_token);
+        spotifyApi.setRefreshToken(tokens.refresh_token);
+      }
+    } else {
+      throw error;
+    }
+  }
+
+  return spotifyApi;
+}
+
+// OAuth authentication
+function authenticate(spotifyApi) {
+  return new Promise((resolve, reject) => {
+    const scopes = ['user-read-recently-played', 'user-read-currently-playing'];
+    const authorizeURL = spotifyApi.createAuthorizeURL(scopes, 'state');
+
+    console.log('\n=== Spotify Authentication Required ===');
+    const redirectUri = spotifyApi.getRedirectURI();
+    console.log('Redirect URI being used:', redirectUri);
+    
+    // Parse and display the authorization URL to verify redirect_uri parameter
+    try {
+      const urlObj = new URL(authorizeURL);
+      const redirectParam = urlObj.searchParams.get('redirect_uri');
+      console.log('Redirect URI in authorization URL:', redirectParam);
+      console.log('Match:', redirectParam === redirectUri ? 'YES ✓' : 'NO ✗');
+      if (redirectParam !== redirectUri) {
+        console.log('WARNING: Mismatch detected!');
+      }
+    } catch (e) {
+      console.log('Could not parse authorization URL');
+    }
+    
+    console.log('\nPlease visit this URL to authorize the application:');
+    console.log(authorizeURL);
+    console.log('\nWaiting for authorization...');
+    console.log('Note: Your browser may show a security warning for the self-signed certificate.');
+    console.log('This is normal for localhost. Click "Advanced" and proceed anyway.');
+    console.log('\nIMPORTANT: Make sure your Spotify app has this EXACT redirect URI:');
+    console.log('  https://127.0.0.1:8888/callback');
+    console.log('  (Must be HTTPS, not HTTP!)\n');
+
+    // Generate self-signed certificate for HTTPS
+    const attrs = [{ name: 'commonName', value: '127.0.0.1' }];
+    const pems = selfsigned.generate(attrs, { days: 365 });
+
+    // Start HTTPS server to receive callback
+    const server = https.createServer({
+      key: pems.private,
+      cert: pems.cert
+    }, async (req, res) => {
+      if (req.url.startsWith('/callback')) {
+        const url = new URL(req.url, 'https://127.0.0.1:8888');
+        const code = url.searchParams.get('code');
+        const error = url.searchParams.get('error');
+
+        if (error) {
+          res.writeHead(400, { 'Content-Type': 'text/html' });
+          res.end(`<h1>Authorization failed: ${error}</h1>`);
+          server.close();
+          reject(new Error(`Authorization failed: ${error}`));
+          return;
+        }
+
+        if (code) {
+          try {
+            const data = await spotifyApi.authorizationCodeGrant(code);
+            saveTokens({
+              access_token: data.body['access_token'],
+              refresh_token: data.body['refresh_token']
+            });
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            res.end('<h1>Authorization successful! You can close this window.</h1>');
+            server.close();
+            console.log('Authorization successful!\n');
+            resolve();
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'text/html' });
+            res.end(`<h1>Error: ${err.message}</h1>`);
+            server.close();
+            reject(err);
+          }
+        }
+      }
+    });
+
+    server.listen(8888, '127.0.0.1', () => {
+      console.log('Local HTTPS server started on https://127.0.0.1:8888');
+    });
+  });
+}
+
+// Fetch and display current track
+async function fetchAndDisplay(spotifyApi, lastTrackId = null) {
+  try {
+    // Try to get currently playing track first (more accurate)
+    let track = null;
+    let currentTrackId = null;
+    
+    try {
+      const currentlyPlaying = await spotifyApi.getMyCurrentPlayingTrack();
+      if (currentlyPlaying.body && currentlyPlaying.body.item) {
+        track = currentlyPlaying.body.item;
+        currentTrackId = track.id;
+        console.log(`[${new Date().toLocaleTimeString()}] Currently playing track detected`);
+      }
+    } catch (e) {
+      // If no currently playing track, fall back to recently played
+    }
+    
+    // Fall back to recently played tracks if no currently playing track
+    if (!track) {
+      const response = await spotifyApi.getMyRecentlyPlayedTracks({ limit: 1 });
+      
+      if (!response.body.items || response.body.items.length === 0) {
+        console.log(`[${new Date().toLocaleTimeString()}] No recently played tracks found.`);
+        return lastTrackId;
+      }
+
+      track = response.body.items[0].track;
+      currentTrackId = track.id;
+      console.log(`[${new Date().toLocaleTimeString()}] Using recently played track`);
+    }
+    
+    if (!track || !currentTrackId) {
+      console.log(`[${new Date().toLocaleTimeString()}] No valid track found (track: ${!!track}, id: ${currentTrackId})`);
+      return lastTrackId;
+    }
+    
+    // Only update if track changed
+    if (currentTrackId === lastTrackId) {
+      console.log(`[${new Date().toLocaleTimeString()}] Same track (${currentTrackId}), skipping update`);
+      return lastTrackId;
+    }
+    
+    // Log when track changes
+    if (lastTrackId !== null) {
+      console.log(`[${new Date().toLocaleTimeString()}] Track changed from ${lastTrackId} to ${currentTrackId}`);
+    }
+
+    const album = track.album;
+    const albumArtUrl = album.images[0]?.url || album.images[album.images.length - 1]?.url;
+
+    if (!albumArtUrl) {
+      console.log('No album art available for this track.');
+      return currentTrackId;
+    }
+
+    console.log(`\n[${new Date().toLocaleTimeString()}] New track detected:`);
+    console.log(`Track: ${track.name}`);
+    console.log(`Artist: ${track.artists.map(a => a.name).join(', ')}`);
+    console.log(`Album: ${album.name}`);
+    console.log(`Downloading album art...`);
+
+    // Use track ID in filename to avoid caching issues
+    const imagePath = path.join(TEMP_IMAGE_DIR, `album-art-${currentTrackId}.jpg`);
+    await downloadImage(albumArtUrl, imagePath);
+    
+    console.log(`Extracting colors from album art...`);
+    const colors = await extractColors(imagePath);
+    
+    // Fetch audio features for the track
+    let audioFeatures = null;
+    try {
+      const features = await spotifyApi.getAudioFeaturesForTrack(currentTrackId);
+      audioFeatures = features.body;
+      console.log(`Audio features: tempo=${audioFeatures.tempo?.toFixed(1)}bpm, energy=${audioFeatures.energy?.toFixed(2)}`);
+    } catch (error) {
+      console.log('Could not fetch audio features, using defaults');
+    }
+    
+    // Clean up old images (keep current + 1 previous)
+    cleanupOldImages(imagePath, 2);
+    
+    const trackInfo = {
+      track: track.name,
+      artist: track.artists.map(a => a.name).join(', '),
+      album: album.name
+    };
+    
+    console.log(`Updating display...`);
+    await launchElectronApp(imagePath, colors, trackInfo, audioFeatures);
+    
+    return currentTrackId;
+  } catch (error) {
+    console.error('Error fetching track:', error.message);
+    return lastTrackId;
+  }
+}
+
+// Main function with polling
+async function main() {
+  try {
+    const spotifyApi = await initializeSpotify();
+    
+    console.log('Starting Spotify album art display...');
+    console.log('Polling every 30 seconds for new tracks...');
+    console.log('Press Ctrl+C to stop.\n');
+    
+    let lastTrackId = null;
+    
+    // Initial fetch
+    lastTrackId = await fetchAndDisplay(spotifyApi, lastTrackId);
+    
+    // Poll every 30 seconds
+    const pollInterval = setInterval(async () => {
+      try {
+        lastTrackId = await fetchAndDisplay(spotifyApi, lastTrackId);
+      } catch (error) {
+        console.error('Error in polling:', error.message);
+      }
+    }, 30000); // 30 seconds
+    
+    // Handle graceful shutdown
+    process.on('SIGINT', () => {
+      console.log('\n\nShutting down...');
+      clearInterval(pollInterval);
+      if (electronProcess && !electronProcess.killed) {
+        electronProcess.kill();
+      }
+      process.exit(0);
+    });
+    
+    // Keep process alive
+    process.on('uncaughtException', (error) => {
+      console.error('Uncaught exception:', error);
+      clearInterval(pollInterval);
+      process.exit(1);
+    });
+    
+  } catch (error) {
+    console.error('Error:', error.message);
+    if (error.stack) {
+      console.error(error.stack);
+    }
+    process.exit(1);
+  }
+}
+
+// Run main function
+main();

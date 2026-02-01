@@ -1,0 +1,24 @@
+{
+  "name": "spotify-wallpaper",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node spotify-album-art.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "electron": "^39.2.7",
+    "express": "^5.2.1",
+    "node-fetch": "^3.3.2",
+    "spotify-web-api-node": "^5.0.2",
+    "node-vibrant": "^3.2.1-alpha.1",
+    "selfsigned": "^2.1.1"
+  },
+  "devDependencies": {
+    "electron-builder": "^26.7.0"
+  }
+}

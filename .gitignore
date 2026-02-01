@@ -1,0 +1,5 @@
+node_modules/
+.spotify-config.json
+.spotify-tokens.json
+temp/
+*.log

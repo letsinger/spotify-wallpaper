@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Spotify Album Art</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      background: #000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      margin: 0;
+      padding: 0;
+    }
+
+    .container {
+      position: relative;
+      width: 90vmin;
+      max-width: 800px;
+      height: 90vmin;
+      max-height: 800px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .gradient-bg {
+      position: absolute;
+      width: 150%;
+      height: 150%;
+      left: -25%;
+      top: -25%;
+      border-radius: 20px;
+      opacity: 0.8;
+      filter: blur(40px);
+      transform-origin: center center;
+      background: 
+        radial-gradient(circle at 20% 30%, var(--color1, #ff0000) 0%, transparent 50%),
+        radial-gradient(circle at 80% 70%, var(--color2, #00ff00) 0%, transparent 50%),
+        radial-gradient(circle at 40% 80%, var(--color3, #0000ff) 0%, transparent 50%),
+        radial-gradient(circle at 60% 20%, var(--color4, #ff00ff) 0%, transparent 50%),
+        linear-gradient(45deg, var(--color5, #ffff00), var(--color6, #00ffff)),
+        linear-gradient(135deg, var(--color1, #ff0000), var(--color2, #00ff00), var(--color3, #0000ff));
+      background-size: 200% 200%, 200% 200%, 200% 200%, 200% 200%, 300% 300%, 400% 400%;
+    }
+
+    @keyframes gradientMove {
+      0% {
+        background-position: 0% 0%, 100% 100%, 50% 50%, 50% 50%, 0% 0%, 0% 50%;
+      }
+      25% {
+        background-position: 100% 0%, 0% 100%, 0% 100%, 100% 0%, 100% 0%, 100% 50%;
+      }
+      50% {
+        background-position: 100% 100%, 0% 0%, 100% 0%, 0% 100%, 100% 100%, 100% 100%;
+      }
+      75% {
+        background-position: 0% 100%, 100% 0%, 50% 0%, 50% 100%, 0% 100%, 0% 100%;
+      }
+      100% {
+        background-position: 0% 0%, 100% 100%, 50% 50%, 50% 50%, 0% 0%, 0% 50%;
+      }
+    }
+
+    .album-art {
+      position: relative;
+      width: 100%;
+      max-width: 600px;
+      aspect-ratio: 1;
+      border-radius: 15px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+      z-index: 1;
+    }
+
+    .album-art img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .track-info {
+      position: relative;
+      margin-top: 30px;
+      text-align: center;
+      color: white;
+      z-index: 2;
+      text-shadow: 0 2px 10px rgba(0, 0, 0, 0.8);
+      pointer-events: none;
+      width: 100%;
+      max-width: 600px;
+    }
+
+    .track-name {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+
+    .artist-name {
+      font-size: 14px;
+      opacity: 0.9;
+      margin-bottom: 3px;
+    }
+
+    .album-name {
+      font-size: 12px;
+      opacity: 0.8;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="gradient-bg" id="gradientBg"></div>
+    <div class="album-art">
+      <img id="albumImage" src="" alt="Album Art">
+    </div>
+    <div class="track-info">
+      <div class="track-name" id="trackName"></div>
+      <div class="artist-name" id="artistName"></div>
+      <div class="album-name" id="albumName"></div>
+    </div>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+    const path = require('path');
+
+    ipcRenderer.on('album-data', (event, data) => {
+      const { imagePath, colors, trackInfo, audioFeatures } = data;
+      
+      // Set album art image - convert to file:// URL
+      let imageSrc = imagePath;
+      if (!imageSrc.startsWith('file://')) {
+        // Normalize path and convert to file:// URL
+        const normalizedPath = path.normalize(imagePath);
+        if (process.platform === 'win32') {
+          // Windows: file:///C:/path/to/file
+          imageSrc = 'file:///' + normalizedPath.replace(/\\/g, '/');
+        } else {
+          // Unix: file:///path/to/file
+          imageSrc = 'file://' + normalizedPath;
+        }
+      }
+      
+      // Set the image src (using unique filenames per track avoids caching issues)
+      document.getElementById('albumImage').src = imageSrc;
+      
+      // Set track info
+      document.getElementById('trackName').textContent = trackInfo.track;
+      document.getElementById('artistName').textContent = trackInfo.artist;
+      document.getElementById('albumName').textContent = trackInfo.album;
+      
+      // Create gradient from extracted colors
+      const gradientBg = document.getElementById('gradientBg');
+      if (colors && colors.length > 0) {
+        const gradientColors = colors.map(c => `rgb(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])})`).join(', ');
+        gradientBg.style.background = `linear-gradient(45deg, ${gradientColors})`;
+        gradientBg.style.backgroundSize = '400% 400%';
+      }
+      
+      // Use audio features to control animation
+      if (audioFeatures) {
+        // Calculate animation duration based on tempo (faster tempo = faster animation)
+        // Tempo is in BPM, convert to seconds per beat, then scale
+        const tempo = audioFeatures.tempo || 120; // Default to 120 BPM
+        const beatsPerSecond = tempo / 60;
+        // Map tempo to animation speed: 60 BPM = 8s, 120 BPM = 4s, 180 BPM = 2.5s
+        const moveDuration = Math.max(2, Math.min(8, 480 / tempo)); // 2-8 seconds inversely proportional to tempo
+        
+        // Update animation with tempo-based duration
+        gradientBg.style.animation = `gradientMove ${moveDuration}s ease infinite`;
+      } else {
+        // Default animation if no audio features
+        gradientBg.style.animation = 'gradientMove 4s ease infinite';
+      }
+      
+      // Set gradient colors from extracted album art colors
+      if (colors && colors.length >= 6) {
+        gradientBg.style.setProperty('--color1', `rgb(${Math.round(colors[0][0])}, ${Math.round(colors[0][1])}, ${Math.round(colors[0][2])})`);
+        gradientBg.style.setProperty('--color2', `rgb(${Math.round(colors[1][0])}, ${Math.round(colors[1][1])}, ${Math.round(colors[1][2])})`);
+        gradientBg.style.setProperty('--color3', `rgb(${Math.round(colors[2][0])}, ${Math.round(colors[2][1])}, ${Math.round(colors[2][2])})`);
+        gradientBg.style.setProperty('--color4', `rgb(${Math.round(colors[3][0])}, ${Math.round(colors[3][1])}, ${Math.round(colors[3][2])})`);
+        gradientBg.style.setProperty('--color5', `rgb(${Math.round(colors[4][0])}, ${Math.round(colors[4][1])}, ${Math.round(colors[4][2])})`);
+        gradientBg.style.setProperty('--color6', `rgb(${Math.round(colors[5][0])}, ${Math.round(colors[5][1])}, ${Math.round(colors[5][2])})`);
+      }
+    });
+  </script>
+</body>
+</html>
