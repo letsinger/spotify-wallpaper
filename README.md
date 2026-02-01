@@ -133,10 +133,18 @@ To make the app start automatically on boot, set up a systemd service:
    nano spotify-wallpaper.service
    ```
 
-2. Replace `YOUR_USERNAME` with your actual Linux username in two places:
+2. Replace `YOUR_USERNAME` with your actual Linux username in **all places**:
+   - `User=YOUR_USERNAME`
+   - `Group=YOUR_USERNAME`
    - `WorkingDirectory=/home/YOUR_USERNAME/spotify-wallpaper`
    - `Environment=XAUTHORITY=/home/YOUR_USERNAME/.Xauthority`
+   - `Environment=HOME=/home/YOUR_USERNAME`
    - `ExecStart=/usr/bin/node /home/YOUR_USERNAME/spotify-wallpaper/spotify-album-art.js`
+   
+   **Important:** Make sure the path exists and you have the correct username. You can find your username with:
+   ```bash
+   whoami
+   ```
 
 3. Also update the path if your project is in a different location
 
@@ -145,20 +153,33 @@ To make the app start automatically on boot, set up a systemd service:
    sudo cp spotify-wallpaper.service /etc/systemd/system/
    ```
 
-5. Reload systemd and enable the service:
+5. **Verify the service file is valid:**
+   ```bash
+   sudo systemd-analyze verify /etc/systemd/system/spotify-wallpaper.service
+   ```
+   This will show any errors in the service file.
+
+6. Reload systemd and enable the service:
    ```bash
    sudo systemctl daemon-reload
    sudo systemctl enable spotify-wallpaper.service
    ```
+   
+   **Note:** Make sure there's no space in the service name - it's `spotify-wallpaper.service` (with a hyphen, not a space)
 
-6. Start the service:
+7. Start the service:
    ```bash
    sudo systemctl start spotify-wallpaper.service
    ```
 
-7. Check status:
+8. Check status:
    ```bash
    sudo systemctl status spotify-wallpaper.service
+   ```
+   
+   If it's hanging or failing, check the logs:
+   ```bash
+   sudo journalctl -u spotify-wallpaper.service -f
    ```
 
 8. To stop the service:
@@ -233,6 +254,23 @@ The app will continue running and updating until you press `Ctrl+C` to stop it.
 - **"No recently played tracks"**: Make sure you've played some music on Spotify recently
 - **Electron window doesn't appear**: Make sure Electron is properly installed (`npm install`)
 - **Colors look wrong**: The color extraction may vary - this is normal and depends on the album art
+- **Service hangs on enable**: 
+  - Make sure you're using the correct service name: `spotify-wallpaper.service` (with hyphen, **no space**)
+  - Verify the service file syntax: `sudo systemd-analyze verify /etc/systemd/system/spotify-wallpaper.service`
+  - Check if the path exists: `ls -la /home/YOUR_USERNAME/spotify-wallpaper`
+  - Check if node is in the right location: `which node` (should be `/usr/bin/node` or update the path in the service file)
+  - If it still hangs, try: `sudo systemctl --no-block enable spotify-wallpaper.service`
+  - Check logs: `sudo journalctl -u spotify-wallpaper.service -n 50`
+
+- **Service is running but display is not updating**:
+  1. **Check if Electron window is visible**: Look for an Electron window on your screen. If you don't see one, the window might not be created.
+  2. **Check service logs**: `sudo journalctl -u spotify-wallpaper.service -f` (follow mode) to see real-time logs
+  3. **Check if update file is being written**: `ls -la /home/YOUR_USERNAME/spotify-wallpaper/temp/update.json` and `cat /home/YOUR_USERNAME/spotify-wallpaper/temp/update.json`
+  4. **Check if Electron process is running**: `ps aux | grep electron`
+  5. **Verify DISPLAY environment**: The service file should have `Environment=DISPLAY=:0`. Check with: `sudo systemctl show spotify-wallpaper.service | grep DISPLAY`
+  6. **Check permissions**: Make sure the `temp/` directory is writable: `ls -ld /home/YOUR_USERNAME/spotify-wallpaper/temp`
+  7. **Restart the service**: `sudo systemctl restart spotify-wallpaper.service` and watch the logs
+  8. **Check for errors in logs**: Look for "Error", "Failed", or "Missing" messages in the journalctl output
 
 ## Security Notes
 

@@ -181,10 +181,17 @@ function launchElectronApp(imagePath, colors, trackInfo, audioFeatures = null) {
     
     // Write update to a file that Electron can watch
     const updateFile = path.join(TEMP_IMAGE_DIR, 'update.json');
-    fs.writeFileSync(updateFile, JSON.stringify(updateData));
+    try {
+      fs.writeFileSync(updateFile, JSON.stringify(updateData, null, 2));
+      console.log(`[${new Date().toLocaleTimeString()}] Wrote update file: ${updateFile}`);
+      console.log(`[${new Date().toLocaleTimeString()}] Update data: track=${trackInfo.track}`);
+    } catch (error) {
+      console.error(`[${new Date().toLocaleTimeString()}] Error writing update file:`, error.message);
+    }
     
     // If Electron is already running, it will pick up the update via file watch
     if (electronProcess && !electronProcess.killed) {
+      console.log(`[${new Date().toLocaleTimeString()}] Electron process already running, update will be picked up via file watch`);
       resolve();
       return;
     }
@@ -209,14 +216,30 @@ function launchElectronApp(imagePath, colors, trackInfo, audioFeatures = null) {
     
     electronProcess = spawn(electronPath, args, {
       detached: false,
-      stdio: 'ignore'
+      stdio: ['ignore', 'pipe', 'pipe'] // Capture stdout and stderr for logging
     });
     
-    electronProcess.on('exit', () => {
+    // Log Electron output
+    electronProcess.stdout.on('data', (data) => {
+      console.log(`[Electron] ${data.toString().trim()}`);
+    });
+    
+    electronProcess.stderr.on('data', (data) => {
+      console.error(`[Electron Error] ${data.toString().trim()}`);
+    });
+    
+    electronProcess.on('exit', (code) => {
+      console.log(`[${new Date().toLocaleTimeString()}] Electron process exited with code ${code}`);
       electronProcess = null;
     });
     
+    electronProcess.on('error', (error) => {
+      console.error(`[${new Date().toLocaleTimeString()}] Electron process error:`, error.message);
+    });
+    
     electronProcess.unref();
+    
+    console.log(`[${new Date().toLocaleTimeString()}] Launched Electron process (PID: ${electronProcess.pid})`);
     
     // Give it a moment to start
     setTimeout(() => {

@@ -4,9 +4,12 @@ After=network.target sound.target graphical.target
 
 [Service]
 Type=simple
+User=YOUR_USERNAME
+Group=YOUR_USERNAME
 WorkingDirectory=/home/YOUR_USERNAME/spotify-wallpaper
 Environment=DISPLAY=:0
 Environment=XAUTHORITY=/home/YOUR_USERNAME/.Xauthority
+Environment=HOME=/home/YOUR_USERNAME
 ExecStart=/usr/bin/node /home/YOUR_USERNAME/spotify-wallpaper/spotify-album-art.js
 Restart=always
 RestartSec=10
