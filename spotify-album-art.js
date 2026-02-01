@@ -15,9 +15,16 @@ const CONFIG_FILE = path.join(__dirname, '.spotify-config.json');
 const TOKEN_FILE = path.join(__dirname, '.spotify-tokens.json');
 const TEMP_IMAGE_DIR = path.join(__dirname, 'temp');
 
-// Ensure temp directory exists
+// Ensure temp directory exists with proper permissions
 if (!fs.existsSync(TEMP_IMAGE_DIR)) {
-  fs.mkdirSync(TEMP_IMAGE_DIR, { recursive: true });
+  fs.mkdirSync(TEMP_IMAGE_DIR, { recursive: true, mode: 0o755 });
+} else {
+  // Ensure existing directory has correct permissions
+  try {
+    fs.chmodSync(TEMP_IMAGE_DIR, 0o755);
+  } catch (e) {
+    // Ignore permission errors if we can't change it
+  }
 }
 
 // Load configuration
@@ -47,6 +54,16 @@ function saveTokens(tokens) {
 // Download image from URL
 function downloadImage(url, filepath) {
   return new Promise((resolve, reject) => {
+    // Ensure the directory exists before writing
+    const dir = path.dirname(filepath);
+    if (!fs.existsSync(dir)) {
+      try {
+        fs.mkdirSync(dir, { recursive: true, mode: 0o755 });
+      } catch (e) {
+        return reject(new Error(`Failed to create directory ${dir}: ${e.message}`));
+      }
+    }
+    
     const protocol = url.startsWith('https') ? https : http;
     const file = fs.createWriteStream(filepath);
     
@@ -259,53 +276,70 @@ function launchElectronApp(imagePath, colors, trackInfo, audioFeatures = null) {
 
 // Initialize Spotify API
 async function initializeSpotify() {
-  const config = loadConfig();
-  const spotifyApi = new SpotifyWebApi({
-    clientId: config.clientId,
-    clientSecret: config.clientSecret,
-    redirectUri: config.redirectUri || 'https://127.0.0.1:8888/callback'
-  });
-
-  let tokens = loadTokens();
-  
-  if (!tokens) {
-    console.log('No saved tokens found. Starting OAuth flow...');
-    await authenticate(spotifyApi);
-    tokens = loadTokens();
-  }
-
-  spotifyApi.setAccessToken(tokens.access_token);
-  spotifyApi.setRefreshToken(tokens.refresh_token);
-
-  // Check if token needs refresh
   try {
-    await spotifyApi.getMe();
-  } catch (error) {
-    if (error.statusCode === 401) {
-      console.log('Token expired. Refreshing...');
-      try {
-        const data = await spotifyApi.refreshAccessToken();
-        spotifyApi.setAccessToken(data.body['access_token']);
-        if (data.body['refresh_token']) {
-          spotifyApi.setRefreshToken(data.body['refresh_token']);
-        }
-        saveTokens({
-          access_token: spotifyApi.getAccessToken(),
-          refresh_token: spotifyApi.getRefreshToken()
-        });
-      } catch (refreshError) {
-        console.error('Failed to refresh token. Re-authenticating...');
-        await authenticate(spotifyApi);
-        tokens = loadTokens();
-        spotifyApi.setAccessToken(tokens.access_token);
-        spotifyApi.setRefreshToken(tokens.refresh_token);
-      }
-    } else {
-      throw error;
-    }
-  }
+    const config = loadConfig();
+    const spotifyApi = new SpotifyWebApi({
+      clientId: config.clientId,
+      clientSecret: config.clientSecret,
+      redirectUri: config.redirectUri || 'https://127.0.0.1:8888/callback'
+    });
 
-  return spotifyApi;
+    let tokens = loadTokens();
+    
+    if (!tokens) {
+      console.log('No saved tokens found. Starting OAuth flow...');
+      console.log('WARNING: Authentication requires user interaction. If running as a service,');
+      console.log('you may need to authenticate manually first by running the script directly.');
+      await authenticate(spotifyApi);
+      tokens = loadTokens();
+      if (!tokens) {
+        throw new Error('Authentication failed - no tokens saved');
+      }
+    }
+
+    spotifyApi.setAccessToken(tokens.access_token);
+    spotifyApi.setRefreshToken(tokens.refresh_token);
+
+    // Check if token needs refresh
+    try {
+      await spotifyApi.getMe();
+    } catch (error) {
+      if (error.statusCode === 401) {
+        console.log('Token expired. Refreshing...');
+        try {
+          const data = await spotifyApi.refreshAccessToken();
+          spotifyApi.setAccessToken(data.body['access_token']);
+          if (data.body['refresh_token']) {
+            spotifyApi.setRefreshToken(data.body['refresh_token']);
+          }
+          saveTokens({
+            access_token: spotifyApi.getAccessToken(),
+            refresh_token: spotifyApi.getRefreshToken()
+          });
+        } catch (refreshError) {
+          console.error('Failed to refresh token. Re-authenticating...');
+          console.error('Refresh error:', refreshError.message);
+          await authenticate(spotifyApi);
+          tokens = loadTokens();
+          if (!tokens) {
+            throw new Error('Re-authentication failed - no tokens saved');
+          }
+          spotifyApi.setAccessToken(tokens.access_token);
+          spotifyApi.setRefreshToken(tokens.refresh_token);
+        }
+      } else {
+        throw error;
+      }
+    }
+
+    return spotifyApi;
+  } catch (error) {
+    console.error('Error initializing Spotify API:', error.message);
+    if (error.stack) {
+      console.error(error.stack);
+    }
+    throw error;
+  }
 }
 
 // OAuth authentication
