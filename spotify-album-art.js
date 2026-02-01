@@ -214,9 +214,18 @@ function launchElectronApp(imagePath, colors, trackInfo, audioFeatures = null) {
       escapedAudioFeatures
     ];
     
+    // Log environment variables being passed
+    const electronEnv = {
+      ...process.env,  // Inherit all environment variables
+      DISPLAY: process.env.DISPLAY || ':0',  // Ensure DISPLAY is set
+      XAUTHORITY: process.env.XAUTHORITY  // Pass XAUTHORITY if set
+    };
+    console.log(`[${new Date().toLocaleTimeString()}] Launching Electron with DISPLAY=${electronEnv.DISPLAY}, XAUTHORITY=${electronEnv.XAUTHORITY || 'not set'}`);
+    
     electronProcess = spawn(electronPath, args, {
       detached: false,
-      stdio: ['ignore', 'pipe', 'pipe'] // Capture stdout and stderr for logging
+      stdio: ['ignore', 'pipe', 'pipe'], // Capture stdout and stderr for logging
+      env: electronEnv
     });
     
     // Log Electron output
