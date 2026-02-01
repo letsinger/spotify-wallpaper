@@ -308,9 +308,13 @@ function authenticate(spotifyApi) {
     console.log('  https://127.0.0.1:8888/callback');
     console.log('  (Must be HTTPS, not HTTP!)\n');
 
-    // Generate self-signed certificate for HTTPS
+    // Generate self-signed certificate for HTTPS with larger key size
     const attrs = [{ name: 'commonName', value: '127.0.0.1' }];
-    const pems = selfsigned.generate(attrs, { days: 365 });
+    const pems = selfsigned.generate(attrs, { 
+      days: 365,
+      keySize: 2048,  // Use 2048-bit key (required by modern OpenSSL)
+      algorithm: 'sha256'
+    });
 
     // Start HTTPS server to receive callback
     const server = https.createServer({
