@@ -1,0 +1,17 @@
+[Unit]
+Description=Spotify Album Art Display
+After=network.target sound.target graphical.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/YOUR_USERNAME/spotify-wallpaper
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/YOUR_USERNAME/.Xauthority
+ExecStart=/usr/bin/node /home/YOUR_USERNAME/spotify-wallpaper/spotify-album-art.js
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=graphical.target
