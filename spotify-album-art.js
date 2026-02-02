@@ -503,7 +503,15 @@ async function fetchAndDisplay(spotifyApi, lastTrackId = null) {
     }
     
     // Fall back to recently played tracks if no currently playing track
+    // BUT only if we don't already have a displayed track (to avoid reverting to older tracks when Spotify closes)
     if (!track) {
+      // If we already have a lastTrackId, keep showing it instead of reverting to older recently played tracks
+      if (lastTrackId !== null) {
+        console.log(`[${new Date().toLocaleTimeString()}] No currently playing track, keeping last displayed track (${lastTrackId})`);
+        return lastTrackId;
+      }
+      
+      // Only use recently played if we've never displayed anything
       try {
         const response = await spotifyApi.getMyRecentlyPlayedTracks({ limit: 1 });
         
@@ -514,7 +522,7 @@ async function fetchAndDisplay(spotifyApi, lastTrackId = null) {
 
         track = response.body.items[0].track;
         currentTrackId = track.id;
-        console.log(`[${new Date().toLocaleTimeString()}] Using recently played track`);
+        console.log(`[${new Date().toLocaleTimeString()}] Using recently played track (initial load)`);
       } catch (e) {
         // If token expired, try to refresh and retry
         if (e.statusCode === 401) {
