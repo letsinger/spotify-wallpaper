@@ -3,6 +3,8 @@ const path = require('path');
 const fs = require('fs');
 
 let mainWindow;
+let updateFileWatcher = null;
+let updateDirWatcher = null;
 const UPDATE_FILE = path.join(__dirname, 'temp', 'update.json');
 
 function log(message) {
@@ -121,7 +123,7 @@ app.whenReady().then(() => {
     watchUpdateFile();
     
     // Watch for file changes
-    fs.watchFile(UPDATE_FILE, { interval: 1000 }, (curr, prev) => {
+    updateFileWatcher = fs.watchFile(UPDATE_FILE, { interval: 1000 }, (curr, prev) => {
       if (curr.mtime > prev.mtime) {
         watchUpdateFile();
       }
@@ -129,10 +131,22 @@ app.whenReady().then(() => {
     
     // Also watch the directory in case the file doesn't exist yet
     const tempDir = path.dirname(UPDATE_FILE);
-    fs.watch(tempDir, (eventType, filename) => {
+    updateDirWatcher = fs.watch(tempDir, (eventType, filename) => {
       if (filename === 'update.json') {
         log(`Update file ${eventType} detected`);
         setTimeout(watchUpdateFile, 100); // Small delay to ensure file is written
+      }
+    });
+    
+    // Clean up watchers on app quit
+    app.on('before-quit', () => {
+      if (updateFileWatcher) {
+        fs.unwatchFile(UPDATE_FILE);
+        updateFileWatcher = null;
+      }
+      if (updateDirWatcher) {
+        updateDirWatcher.close();
+        updateDirWatcher = null;
       }
     });
   } else {

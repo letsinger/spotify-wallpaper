@@ -256,11 +256,22 @@ function launchElectronApp(imagePath, colors, trackInfo, audioFeatures = null) {
     
     electronProcess.on('exit', (code) => {
       console.log(`[${new Date().toLocaleTimeString()}] Electron process exited with code ${code}`);
+      // Clean up event listeners to prevent memory leaks
+      electronProcess.stdout.removeAllListeners();
+      electronProcess.stderr.removeAllListeners();
+      electronProcess.removeAllListeners();
       electronProcess = null;
     });
     
     electronProcess.on('error', (error) => {
       console.error(`[${new Date().toLocaleTimeString()}] Electron process error:`, error.message);
+      // Clean up on error
+      if (electronProcess) {
+        electronProcess.stdout.removeAllListeners();
+        electronProcess.stderr.removeAllListeners();
+        electronProcess.removeAllListeners();
+        electronProcess = null;
+      }
     });
     
     electronProcess.unref();
@@ -658,24 +669,69 @@ async function main() {
       try {
         lastTrackId = await fetchAndDisplay(spotifyApi, lastTrackId);
       } catch (error) {
-        console.error('Error in polling:', error.message);
+        console.error(`[${new Date().toLocaleTimeString()}] Error in polling:`, error.message);
+        // Don't log full stack trace for polling errors to reduce log size
       }
     }, 30000); // 30 seconds
     
+    // Periodic memory cleanup and health check (every 10 minutes)
+    let healthCheckInterval = setInterval(() => {
+      // Log memory usage periodically (helps monitor for leaks)
+      if (process.memoryUsage) {
+        const memUsage = process.memoryUsage();
+        const memMB = {
+          rss: (memUsage.rss / 1024 / 1024).toFixed(2),
+          heapUsed: (memUsage.heapUsed / 1024 / 1024).toFixed(2),
+          heapTotal: (memUsage.heapTotal / 1024 / 1024).toFixed(2)
+        };
+        console.log(`[${new Date().toLocaleTimeString()}] Memory usage: RSS=${memMB.rss}MB, Heap=${memMB.heapUsed}/${memMB.heapTotal}MB`);
+        
+        // Warn if memory usage is getting high (>500MB RSS)
+        if (memUsage.rss > 500 * 1024 * 1024) {
+          console.warn(`[${new Date().toLocaleTimeString()}] Warning: High memory usage detected (${memMB.rss}MB RSS)`);
+        }
+      }
+      
+      // Ensure temp directory cleanup
+      if (fs.existsSync(TEMP_IMAGE_DIR)) {
+        try {
+          const files = fs.readdirSync(TEMP_IMAGE_DIR);
+          const imageFiles = files.filter(f => f.startsWith('album-art-') && f.endsWith('.jpg'));
+          if (imageFiles.length > 10) {
+            console.log(`[${new Date().toLocaleTimeString()}] Cleaning up ${imageFiles.length} old image files`);
+            cleanupOldImages(null, 2);
+          }
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+      }
+    }, 600000); // Every 10 minutes
+    
     // Handle graceful shutdown
-    process.on('SIGINT', () => {
-      console.log('\n\nShutting down...');
+    const shutdown = () => {
+      console.log(`\n[${new Date().toLocaleTimeString()}] Shutting down...`);
       clearInterval(pollInterval);
+      clearInterval(healthCheckInterval);
       if (electronProcess && !electronProcess.killed) {
         electronProcess.kill();
       }
       process.exit(0);
-    });
+    };
+    
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
     
     // Keep process alive
     process.on('uncaughtException', (error) => {
-      console.error('Uncaught exception:', error);
+      console.error(`[${new Date().toLocaleTimeString()}] Uncaught exception:`, error.message);
+      if (error.stack) {
+        console.error(error.stack);
+      }
       clearInterval(pollInterval);
+      clearInterval(healthCheckInterval);
+      if (electronProcess && !electronProcess.killed) {
+        electronProcess.kill();
+      }
       process.exit(1);
     });
     
